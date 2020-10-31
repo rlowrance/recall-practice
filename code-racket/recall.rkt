@@ -5,7 +5,7 @@
 (require racket/struct)
 (require debug)
 
-; -> hash
+; hash
 ; create runtime options (global variable)
 ; TO IMPLEMENT
 ;  -n N limit number of items to review in this session
@@ -13,7 +13,7 @@
 (define options
   (hash 'path-to-data "../data/"
         'in-schedule-filename "schedule.txt"
-        'out-schedule-filename "schedule-new.txt"))
+        'out-schedule-filename "schedule.txt"))
 
 ; run-time control
 (date-display-format 'iso-8601); otherwise, dates are displayed in American format
@@ -22,12 +22,24 @@
 
 ; symbol symbol string -> item-id
 (struct item-id (source-id section-id stem) #:transparent)
+(define (item-id->list x) (list (item-id-source-id x) (item-id-section-id x) (item-id-stem x)))
 
 ; string string number seconds days -> fib
 (struct fib (stem choice weight due) #:transparent)
 
 ; symbol symbol days -> schedule
 (struct schedule (date time interval) #:transparent)
+(define (schedule->list x) (list (schedule-date x) (schedule-time x) (schedule-interval x)))
+
+; string string -> command
+(struct command (action detail)
+  #:transparent
+  #:guard (lambda (action detail name)
+            (printf "construction command with ~a ~a ~a~n" action detail name)
+            (cond ((and (equal? action "continue") (member detail '("again" "hard" "good" "easy"))) (values action detail))
+                  ((and (equal? action "stop") (string? detail)) (values action detail))
+                  ((and (equal? action "note") (string? detail)) (values action detail))
+                  (#t (error (format "cannot construct a score with action ~a and detail ~a" action detail))))))
 
 ; string -> string (with IO)
 ; read line of text after prompting user
@@ -105,10 +117,13 @@
 
 ; path -> boolean
 (define (hidden? path)
-  (equal? #\. (string-ref (path->string path) 0)))
+  (define verbose #f)
+  (let ((result (equal? #\. (string-ref (path->string path) 0))))
+    (when verbose (printf "hidden?:~a -> ~a~n" path result))
+    result))
 
-; path -> hash
-; read and return active items
+; path (hash/c item-id fib)
+; read and return active items, hash of source titles, hash of section titles
 (define (build-active-items path-to-data-dir)
   (define verbose #f)
   (when verbose (printf "build-active-items: ~a ~n" path-to-data-dir))
@@ -148,7 +163,7 @@
                               (#t result)))))))
     (iter (directory-list path-to-sources-dir) (hash)))
 
-  ; string -> hash
+  ; string hash
   (define (process-active-line active-line)
     (let* ((pieces (string-split active-line))
            (weight (string->number (list-ref pieces 0)))
@@ -162,8 +177,6 @@
     (let ((active-line (read-line port)))
       (cond ((eof-object? active-line) result)
             (#t (hash-union result (process-active-line active-line))))))
-  
-  ; main
   (let* ((path-to-active-file (build-path path-to-data-dir "active.txt"))
          (port (open-input-file path-to-active-file #:mode 'text)))
     (begin0
@@ -191,26 +204,27 @@
          (time-zone-offset 0))
     (date->seconds (date second minute hour day month year week-day year-day dst? time-zone-offset))))
     
-; path -> hash
-; read schedule file, returning a hash table with keys=item-id and values=schedule
+; path -> (hash/c item-id schedule)
+; read schedule file
 (define (read-schedule-file path-to-file)
-  (define verbose #t)
-  (when verbose (printf "read-schedule-file: ~a~n" path-to-file))
+  (define verbose #f)
+  (when verbose (printf "read-schedule-file:~a~n" path-to-file))
   ; (list item-id schedule) hash -> hash'
   (define (process-datum datum result)
-    (when verbose (printf "~nprocess-datum:~n datum:~a~n result:~a~n" datum result))
+    (when verbose (printf "process-datum:~n datum:~a~n result:~a~n" datum result))
     (let* ((ks (car datum))
            (vs (cadr datum))
            (key (item-id (car ks) (cadr ks) (caddr ks)))
            (value (schedule (car vs) (cadr vs) (caddr vs))))
-      (when verbose (printf "datum:~a~n   key:~a~nvalue:~a~n" datum key value))
+      #;(when verbose (printf "datum:~a~n   key:~a~nvalue:~a~n" datum key value))
       (cond ((hash-has-key? result key)(printf "~nerror in schedule file: duplicate item-id:~a~n" key) (exit 1))
             (#t (hash-set result key value)))))
   ; port hash -> hash'
   (define (process-data port result)
     (let ((datum (read port)))
+      (when verbose (printf "process-data::datum:~a~n" datum))
       (cond ((eof-object? datum) result)
-            (#t (process-datum datum result)))))
+            (#t (process-data port (process-datum datum result))))))
   (cond ((file-exists? path-to-file) (let ((port (open-input-file path-to-file #:mode 'text)))
                                        (begin0 (process-data port (hash))
                                                (close-input-port port))))
@@ -223,7 +237,7 @@
 ; hash hash -> hash
 ; set the last-presented and interval fields for each of the fibs, using the schedule when it is available
 (define (add-schedule schedule fibs)
-  (define verbose #t)
+  (define verbose #f)
   (when verbose (printf "add-schedule~n"))
   (print-hash "schedule" schedule)
   (define (update-due-date old-fib new-schedule)
@@ -277,27 +291,18 @@
 ; item-id fib -> string
 ; present one item
 (define (present-item-with-random-results id item); STEM: produce random scores
-  (define verbose #t)
+  (define verbose #f)
   (let ((answers '("again" "hard" "good" "easy"))
         (weights '(1 1 1 1)))
     (let ((r (list-ref answers (select-weighted weights))))
       (when verbose (printf "present-item: id:~a answer:~a~n" id r))
       r)))
 
-(struct command (action detail)
-  #:transparent
-  #:guard (lambda (action detail name)
-            (printf "construction command with ~a ~a ~a~n" action detail name)
-            (cond ((and (equal? action "continue") (member detail '("again" "hard" "good" "easy"))) (values action detail))
-                  ((and (equal? action "stop") (string? detail)) (values action detail))
-                  ((and (equal? action "note") (string? detail)) (values action detail))
-                  (#t (error (format "cannot construct a score with action ~a and detail ~a" action detail))))))
-
 ; -> item-id fib (listof commands) (listof commands)
 ; present item and retrieve user's score or commands
 (define (present-item1 id item result)
-  (define verbose #t)
-  (printf "present-item1:~a ~a ~a~n" id item result)
+  (define verbose #f)
+  (when verbose (printf "present-item1:~a ~a ~a~n" id item result))
   ; -> string? (or/c list? f#)
   (define (is-help s)  (member s '("help" "?")))
   (define (is-again s) (member s '("again" "a" "1")))
@@ -324,7 +329,7 @@
     (printf " note TEXT       ==> record a note for the item~n")
     (printf " help |?         ==> print this help and continue~n"))
   ; -> (listof command) (listof command)
-  (define/debug (get-command result)
+  (define (get-command result)
     (let ((str (prompt/read "enter your command or ? for help: ")))
       (printf "read was |~a|~n" str)
       (printf "result so far is ~a~n" result)
@@ -345,25 +350,24 @@
           (#t (printf "~ncorrect answer:~a~n" (fib-choice item))
               (get-command result)))))
 
+; item-id fib (listof command)
+(define (present-item id item)
+  (define verbose #f)
+  (let ((commands (present-item1 id item (list))))
+    (when verbose (for ((command commands))
+                    (printf "present-item::command:~a~n" commands)))
+    commands))
 
-
-(define (test-present-item)
+#;(define (test-present-item)
   (present-item (item-id "test source" "test section" "test stem") (fib "test stem" "test choice" 1 0)))
 
-(define (test) (test-present-item))
+#;(define (test) (test-present-item))
           
 ; -> (hash/c item-id fib) (hash/c item-id (listof command))
 ; present the items to the user, capture user's commands for each item
 (define (present-items fibs)
-  (define verbose #t)
+  (define verbose #f)
   (when verbose (printf "~npresent-items:~a~n" (length (hash-keys fibs))))
-  ; item-id fib (listof command)
-  (define (present-item id item)
-    (define verbose #t)
-    (let ((commands (present-item1 id item (list))))
-      (when verbose (for ((command commands))
-                      (printf "present-item::command:~a~n" commands)))
-      commands))
   (define (contains-stop? commands)
     (cond ((null? commands) #f)
           ((equal? (command-action (car commands)) "stop") #t)
@@ -374,26 +378,15 @@
                      (next-item (hash-ref todo next-item-id))
                      (commands (present-item next-item-id next-item)))
                 (cond ((contains-stop? commands) (hash-set result next-item-id commands))
-                      (#t (iter (hash-remove todo next-item-id) (hash-set result next-item-id command))))))))
+                      (#t (iter (hash-remove todo next-item-id) (hash-set result next-item-id commands))))))))
   (iter fibs (hash)))
   
-; string -> number
-; convert quiz result into interval multiplier
-(define (increment r)
-  (cond ((equal? r "again") 0)
-        ((equal? r "hard") .8)
-        ((equal? r "good") 2.5)
-        ((equal? r "easy") 4)
-        (else (printf "bad result (r):~a~n") (exit r))))
 
 ; unit tests
 (define (unit-tests)
   (test-select-weighted #f))
 
-; study (let <id> (<bindings>) <body>)
-
-  
-(define (sum xs)
+(define (sum xs);demo (let fn ...)
   (let iter ((rest xs) (result 1))
     (cond ((null? xs) result)
           (else (iter (sub1 (car xs)) (+ (car xs) result))))))
@@ -408,40 +401,56 @@
   #;(when verbose (print-hash "update-schedule::quiz-result" quiz-result))
   (define now (current-seconds))
   (define datetime (seconds->date now))
+  ; number -> string
+  ; ex: (ns2 10) -> "10; (ns2 9) -> "09"
+  (define (ns2 x) (let ((result (number->string x)))
+                     (if (< (string-length result) 2)
+                         (string-append "0" result)
+                         result)))
   (define date (string-append (number->string (date-year datetime))
                               "-"
-                              (number->string (date-month datetime))
+                              (ns2 (date-month datetime))
                               "-"
-                              (number->string (date-day datetime))))
-  (define time (string-append (number->string (date-hour datetime))
+                              (ns2 (date-day datetime))))
+  (define time (string-append (ns2 (date-hour datetime))
                               ":"
-                              (number->string (date-minute datetime))))
-  (define/debug (multiplier score)
-    ((equal? score "hard") 0.8)
-    ((equal? score "good") 2.5)
-    ((equal? score "easy") 4.0))
-  (define/debug (update-schedule item-id detail result)
+                              (ns2 (date-minute datetime))))
+  ; number number number
+  ; draw random number between min and max
+  (define (draw min max)
+    (let ((r (random)))
+      (+ min (* r (- max min)))))
+  (define (draw-about x)
+    (let ((noise .1))
+      (draw (* (- 1 noise) x) (* (+ 1 noise) x))))
+  (define (multiplier score)
+    (cond ((equal? score "hard") (draw-about 0.8))
+          ((equal? score "good") (draw-about 2.5))
+          ((equal? score "easy") (draw-about 4.0))))
+  (define (update-schedule item-id detail result)
     (when verbose (printf "update-schedule:~n ~a~n ~a~n ~a~n" item-id detail result))
+    (when verbose (printf "update-schedule::hash-has-key?:~a~n" (hash-has-key? old-schedule item-id)))
     (hash-set result
               item-id
               (schedule date
                         time
-                        (cond ((hash-has-key? old-schedule item-id)
-                               (* (multiplier detail) (schedule-interval (hash-ref old-schedule item-id))))
-                              (#t 1.0)))))
-  (define/debug (iter2 item-id commands result)
-    (when verbose (printf "iter2:~n ~a~n ~a~n ~a~n" item-id commands result))
+                        (if (hash-has-key? old-schedule item-id)
+                            (* (multiplier detail) (schedule-interval (hash-ref old-schedule item-id)))
+                            
+                            (draw-about 1.0)))))
+  (define (iter-commands item-id commands result)
+    (when verbose (printf "iter-commands:~n ~a~n ~a~n ~a~n" item-id commands result))
     (cond ((null? commands) result)
           (#t (let ((command (car commands)))
-                (cond ((equal? (command-action command "continue"))
-                       (iter2 item-id (cdr commands) (update-schedule item-id (command-detail (car commands)))))
-                      (#t (iter2 (cdr commands) result)))))))
-  (define/debug (iter item-ids result)
+                (if (equal? (command-action command) "continue")
+                    (iter-commands item-id (cdr commands) (update-schedule item-id (command-detail command) result))
+                    (iter-commands item-id (cdr commands) result))))))
+  (define (iter item-ids result)
     (when verbose (printf "iter:~n ~a~n ~a~n" item-ids result))
     (cond ((null? item-ids) result)
           (#t (let* ((item-id (car item-ids))
                      (commands (hash-ref quiz-result item-id)))
-                (iter (cdr item-ids) (iter2 item-id commands result))))))
+                (iter (cdr item-ids) (iter-commands item-id commands result))))))
   (iter (hash-keys quiz-result) (hash)))
   
 
@@ -458,14 +467,15 @@
 ; hash hash path -> <void>
 ; write an updated schedule file
 (define (write-schedule new-schedule path-to-file)
-  (define verbose #t)
+  (define verbose #f)
   (when verbose (print-hash "new-schedule" new-schedule))
   ; item-id schedule port -> IO
   (define (write-line item-id schedule port)
     (when verbose (printf "write-line:~a ~a~n" item-id schedule))
-    (define line (list item-id schedule))
+    (define line (list (item-id->list item-id) (schedule->list schedule)))
+    (when verbose (printf "line:~a~n" line))
     (write line port)
-    (newline))
+    (newline port))
   ; item item -> boolean
   (define (item-id-less<? a b)
     (let ((source-a (item-id-source-id a))
@@ -490,10 +500,52 @@
     (for ((sorted-key sorted-keys))
       (write-line sorted-key (hash-ref new-schedule sorted-key) port))
     (close-output-port port)))
-                          
 
+; path (listof source-directory)
+; return list of source directories
+(define (source-directories path)
+  (define path-to-sources-dir (build-path path-to-data-dir "sources"))
+  (for/list ((fso (directory-list path-to-sources-dir))
+             #:when (and (not (hidden? fso))
+                         (directory-exists? (build-path path-to-sources-dir fso))))
+    fso))
+
+; path (hash/c source-id string)
+; return hash with key=source-id value=name of source
+(define (read-titles path-to-data-dir)
+  (define verbose #t)
+  (when verbose (printf "read-titles:~a~n" path-to-data-dir))
+  (define path-to-sources-dir (build-path path-to-data-dir "sources"))
+  (define (split-path path)
+    (let ((pieces (string-split (path->string path) " ")))
+      (values (car pieces) (string-join (cdr pieces) " "))))
+  (define result (for/hash ((fso (sources-directories path-to-data-dir)))
+                   (split-path fso)))
+  (when verbose (printf " result:~a~n" result))
+  result)
+
+; path (hash/c (pair? source-id section-id) string)
+; return hash with value=title of the section
+(define (read-section-names path-to-data-dir)
+  (define verbose #t)
+  (when verbose (printf "read-section-names:~a ~a~n" titles path-to-data-dir))
+  (define sds (source-directories path-to-data-dir))
+  (when verbose (printf " sds:~a~n" sds))
+  (define (augment-with-sections source-directory result))
+  (
+  (define path-to-sources-dir (build-path path-to-data-dir "sources"))
+  (define (augment-with-sections-for-source section-id section-name result)); oops: the deconstruction may have created another spelling
+  (define (each-source keys values result)
+    (cond ((null? keys) result)
+          (#t (each-source (cdr keys) (cdr values) (augment-with-section-for-source (car keys) (car values) result)))))
+  (let ((result (each-source (hash-keys titles) (hash-values titles) (hash))))
+    (when verbose (printf "->result:~a~n" result))
+    result))
+  
+    
 ; driver
 (define (go)
+  (define verbose #t)
   (unit-tests)
   (random-seed 123); repeat random number draws
   (let* ((now (current-seconds)); time in seconds path UTC 1970-01-01
@@ -501,28 +553,25 @@
          (path-to-input-schedule-file (build-path path-to-data-dir (string->path (hash-ref options 'in-schedule-filename))))
          (path-to-output-schedule-file (build-path path-to-data-dir (string->path (hash-ref options 'out-schedule-filename))))
          (old-schedule (read-schedule-file path-to-input-schedule-file))
+         (titles (read-titles path-to-data-dir))
+         (section-names (read-section-names path-to-data-dir))
          (raw-fibs (build-active-items path-to-data-dir))
-         ;(_ (print-hash "raw-fibs" raw-fibs))
          (augmented-fibs (add-schedule old-schedule raw-fibs))
-         ;(_ (print-hash "augmented-fibs" augmented-fibs))
-         #;(_ (for (((k v) augmented-fibs))
-              (printf "~nk:~a~nv:~a~n" k v)
-              (printf "due:~a now:~a will-be-kept:~a~n" (fib-due v) now (<= (fib-due v) now))
-              ))
          (active-fibs (for/hash (((k v) augmented-fibs); keep only fibs that are due
                             #:when (<= (fib-due v) now))
-                        (printf "will be active: k:~a v:~a~n fib-due:~a now:~a~n" k v (fib-due v) now)
+                        (when verbose (printf "will be active: k:~a v:~a~n fib-due:~a now:~a~n" k v (fib-due v) now))
                         (values k v))))
-    (print-hash "old-schedule" old-schedule)
-    (print-hash "active-fibs" active-fibs)
+    (when verbose (print-hash "titles" titles))
+    (when verbose (print-hash "old-schedule" old-schedule))
+    (when verbose (print-hash "active-fibs" active-fibs))
     (let ((quiz-results (present-items active-fibs))); quiz-results: (hash/c item-id (listof command))
-      (printf "quiz-results:~a~n" quiz-results)
-      (for (((k v) quiz-results)) (printf "~nquiz-result:key:~a~nquiz-result:value:~a~n" k v))
+      (when verbose (printf "quiz-results:~a~n" quiz-results))
+      (when verbose (for (((k v) quiz-results)) (printf "~nquiz-result:key:~a~nquiz-result:value:~a~n" k v)))
       ; TODO: process any notes by writing them to DIR/notes.txt
       (define updated-schedule (update-schedule old-schedule quiz-results))
-      (print-hash "updated-schedule" updated-schedule)
+      (when verbose (print-hash "updated-schedule" updated-schedule))
       (write-schedule updated-schedule path-to-output-schedule-file)
-      (printf "count of active fibs:~a~n" (hash-count active-fibs)))))
+      (when verbose (printf "count of active fibs:~a~n" (hash-count active-fibs))))))
 
   
     
