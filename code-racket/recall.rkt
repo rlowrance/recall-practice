@@ -239,7 +239,7 @@
 (define (add-schedule schedule fibs)
   (define verbose #f)
   (when verbose (printf "add-schedule~n"))
-  (print-hash "schedule" schedule)
+  (when verbose (print-hash "schedule" schedule))
   (define (update-due-date old-fib new-schedule)
     (when verbose "updating old-fib to new-schedule:~n old-fib:~a~n new-schedule:~a~n" old-fib new-schedule)
     (let* ((scheduled-datetime (datetime->seconds (schedule-date new-schedule) (schedule-time new-schedule)))
@@ -298,9 +298,9 @@
       (when verbose (printf "present-item: id:~a answer:~a~n" id r))
       r)))
 
-; -> item-id fib (listof commands) (listof commands)
+; -> item-id fib string string (listof commands) (listof commands)
 ; present item and retrieve user's score or commands
-(define (present-item1 id item result)
+(define (present-item1 id item title section-name result)
   (define verbose #f)
   (when verbose (printf "present-item1:~a ~a ~a~n" id item result))
   ; -> string? (or/c list? f#)
@@ -343,17 +343,19 @@
             (#t (printf "command \"~a\" not recognized~n" str)
                 (help)
                 (get-command result)))))
-  (printf "source-id: ~a~nsection-id:~a~n~n~a~n" (item-id-source-id id) (item-id-section-id id) (item-id-stem id))
+  (printf "source:~a ~a~nsection:~a ~a~n~n~a~n" (item-id-source-id id) title (item-id-section-id id) section-name (item-id-stem id))
   (let ((str (prompt/read "Type your answer or \\stop or \\s to stop or \\note <text>: ")))
     (cond ((is-stop str) (cons (command "stop" "") result))
           ((is-note str) (present-item1 id item (cons (command "note" (note-part str)) result)))
           (#t (printf "~ncorrect answer:~a~n" (fib-choice item))
               (get-command result)))))
 
-; item-id fib (listof command)
-(define (present-item id item)
+; item-id fib (hash/c source-id source-title) (hash/c (pair/c source-id source-title) section-name) (listof command)
+(define (present-item id item titles section-names)
   (define verbose #f)
-  (let ((commands (present-item1 id item (list))))
+  (define title (hash-ref titles (item-id-source-id id)))
+  (define section-name (hash-ref section-names (cons (item-id-source-id id) (item-id-section-id id))))
+  (let ((commands (present-item1 id item title section-name (list))))
     (when verbose (for ((command commands))
                     (printf "present-item::command:~a~n" commands)))
     commands))
@@ -363,9 +365,9 @@
 
 #;(define (test) (test-present-item))
           
-; -> (hash/c item-id fib) (hash/c item-id (listof command))
+; (hash/c item-id fib) (hash/c source-id source-title) (hash/c (pair/c source-id source-title) section-name) (hash/c item-id (listof command))
 ; present the items to the user, capture user's commands for each item
-(define (present-items fibs)
+(define (present-items fibs titles section-names)
   (define verbose #f)
   (when verbose (printf "~npresent-items:~a~n" (length (hash-keys fibs))))
   (define (contains-stop? commands)
@@ -376,7 +378,7 @@
     (cond ((hash-empty? todo) (when verbose (print-hash "present-item::result" result)) result)
           (#t (let* ((next-item-id (select-random-item todo))
                      (next-item (hash-ref todo next-item-id))
-                     (commands (present-item next-item-id next-item)))
+                     (commands (present-item next-item-id next-item titles section-names)))
                 (cond ((contains-stop? commands) (hash-set result next-item-id commands))
                       (#t (iter (hash-remove todo next-item-id) (hash-set result next-item-id commands))))))))
   (iter fibs (hash)))
@@ -503,49 +505,63 @@
 
 ; path (listof source-directory)
 ; return list of source directories
-(define (source-directories path)
+(define (get-source-directories path-to-data-dir)
   (define path-to-sources-dir (build-path path-to-data-dir "sources"))
   (for/list ((fso (directory-list path-to-sources-dir))
              #:when (and (not (hidden? fso))
                          (directory-exists? (build-path path-to-sources-dir fso))))
     fso))
 
+; path (listof file-name)
+(define (get-file-names path)
+  (for/list ((fso (directory-list path))
+             #:when (and (not (hidden? fso))
+                         (file-exists? (build-path path fso))))
+    fso))
+
 ; path (hash/c source-id string)
 ; return hash with key=source-id value=name of source
 (define (read-titles path-to-data-dir)
-  (define verbose #t)
+  (define verbose #f)
   (when verbose (printf "read-titles:~a~n" path-to-data-dir))
   (define path-to-sources-dir (build-path path-to-data-dir "sources"))
   (define (split-path path)
     (let ((pieces (string-split (path->string path) " ")))
       (values (car pieces) (string-join (cdr pieces) " "))))
-  (define result (for/hash ((fso (sources-directories path-to-data-dir)))
+  (define result (for/hash ((fso (get-source-directories path-to-data-dir)))
                    (split-path fso)))
   (when verbose (printf " result:~a~n" result))
   result)
 
 ; path (hash/c (pair? source-id section-id) string)
-; return hash with value=title of the section
-(define (read-section-names path-to-data-dir)
-  (define verbose #t)
-  (when verbose (printf "read-section-names:~a ~a~n" titles path-to-data-dir))
-  (define sds (source-directories path-to-data-dir))
-  (when verbose (printf " sds:~a~n" sds))
-  (define (augment-with-sections source-directory result))
-  (
-  (define path-to-sources-dir (build-path path-to-data-dir "sources"))
-  (define (augment-with-sections-for-source section-id section-name result)); oops: the deconstruction may have created another spelling
-  (define (each-source keys values result)
-    (cond ((null? keys) result)
-          (#t (each-source (cdr keys) (cdr values) (augment-with-section-for-source (car keys) (car values) result)))))
-  (let ((result (each-source (hash-keys titles) (hash-values titles) (hash))))
-    (when verbose (printf "->result:~a~n" result))
-    result))
-  
+(define (read-sections path-to-data-dir)
+  (define source-directories (get-source-directories path-to-data-dir))
+  ; path (values section-id section-name)
+  (define (split-file-name file-name)
+    (let* ((pieces (string-split (path->string file-name) " "))
+           (base-name (string-join (cdr pieces) " "))
+           (base-name-pieces (string-split base-name ".")); remove any suffix on the file name
+           (base-name-without-suffix
+            (cond ((equal? 1 (length base-name-pieces)) base-name)
+                  ((string-join (take base-name-pieces (sub1 (length base-name-pieces))) ".")))))
+      (values (car pieces) base-name-without-suffix)))
+  ; path hash/c
+  (define (process-source-directory source-directory)
+    (define source-id (car (string-split (path->string source-directory) " ")))
+    (define file-names (get-file-names (build-path path-to-data-dir "sources" source-directory)))
+    (for*/hash ((file-name file-names))
+      (let-values (((section-id section-name) (split-file-name file-name)))
+        (values (cons source-id section-id)
+                section-name))))
+  ; (listof path) hash/c
+  (define (process-source-directories source-directories result)
+    (cond ((null? source-directories) result)
+          (#t (process-source-directories (cdr source-directories) (hash-union result (process-source-directory (car source-directories)))))))
+  (process-source-directories source-directories (hash)))
     
 ; driver
 (define (go)
-  (define verbose #t)
+  (define verbose #f)
   (unit-tests)
   (random-seed 123); repeat random number draws
   (let* ((now (current-seconds)); time in seconds path UTC 1970-01-01
@@ -553,8 +569,8 @@
          (path-to-input-schedule-file (build-path path-to-data-dir (string->path (hash-ref options 'in-schedule-filename))))
          (path-to-output-schedule-file (build-path path-to-data-dir (string->path (hash-ref options 'out-schedule-filename))))
          (old-schedule (read-schedule-file path-to-input-schedule-file))
+         (section-names (read-sections path-to-data-dir))
          (titles (read-titles path-to-data-dir))
-         (section-names (read-section-names path-to-data-dir))
          (raw-fibs (build-active-items path-to-data-dir))
          (augmented-fibs (add-schedule old-schedule raw-fibs))
          (active-fibs (for/hash (((k v) augmented-fibs); keep only fibs that are due
@@ -564,7 +580,7 @@
     (when verbose (print-hash "titles" titles))
     (when verbose (print-hash "old-schedule" old-schedule))
     (when verbose (print-hash "active-fibs" active-fibs))
-    (let ((quiz-results (present-items active-fibs))); quiz-results: (hash/c item-id (listof command))
+    (let ((quiz-results (present-items active-fibs titles section-names))); quiz-results: (hash/c item-id (listof command))
       (when verbose (printf "quiz-results:~a~n" quiz-results))
       (when verbose (for (((k v) quiz-results)) (printf "~nquiz-result:key:~a~nquiz-result:value:~a~n" k v)))
       ; TODO: process any notes by writing them to DIR/notes.txt
